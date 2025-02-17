@@ -1,0 +1,11 @@
+.{
+    .name = "xros",
+    .version = "0.0.0",
+    .dependencies = .{
+        .zgl = .{
+            .url = "https://github.com/ziglibs/zgl/archive/d8b25ff8e73de9e3540ee85481981e9ef7ce191b.tar.gz",
+            .hash = "12205cfce3b6a70f152447e39f6f74a4a5f3ccd6abca33ea6aaadb675797dc3329e9",
+        },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "LICENSE", "README" },
+}
