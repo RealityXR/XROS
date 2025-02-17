@@ -1,8 +1,18 @@
 const std = @import("std");
-var target: std.Build.ResolvedTarget = undefined;
-
+const Configuration = struct {
+    os_name: []const u8 = "XROS",
+    sv_major: u16 = 0,
+    sv_minor: u16 = 0,
+    sv_patch: u16 = 1,
+    executables: []const []const u8,
+    libraries: []const []const u8,
+};
+const config = Configuration{
+    .executables = &.{"vrui","ctmn"},
+    .libraries = &.{}
+};
 pub fn build(b: *std.Build) void {
-    target = b.standardTargetOptions(.{});
+    const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
     //libs
@@ -12,47 +22,45 @@ pub fn build(b: *std.Build) void {
     });
 
     //various programs
-    const vrui_mod = b.createModule(.{
-        .root_source_file = b.path("vrui/main.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const vrui = b.addExecutable(.{
-        .name = "vrui",
-        .root_module = vrui_mod,
-    });
-
-    const ctmn_mod = b.createModule(.{
-        .root_source_file = b.path("ctmn/main.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const ctmn = b.addExecutable(.{
-        .name = "ctmn",
-        .root_module = ctmn_mod,
-    });
-
-    //imports
-    vrui_mod.addImport("zgl", zgl.module("zgl"));
-
-    //installs
-    b.installArtifact(vrui);
-    b.installArtifact(ctmn);
+    var modules:[config.executables.len]*std.Build.Module = undefined;
+    var exes:[config.executables.len]*std.Build.Step.Compile = undefined;
+    var main_path:[13]u8 = undefined;
+    @memcpy(main_path[4..], "/main.zig");
+    for (0..config.executables.len-1) |i| {
+        @memcpy(main_path[0..4], config.executables[i]);
+        modules[i] = b.createModule(.{
+            .root_source_file = b.path(&main_path),
+            .target = target,
+            .optimize = optimize,
+        });
+        exes[i] = b.addExecutable(.{
+            .name = config.executables[i],
+            .root_module = modules[i],
+        });
+        modules[i].addImport("zgl", zgl.module("zgl"));
+        b.installArtifact(exes[i]);
+    }
 
     const install_arch = b.step("install_arch","Install Archlinux into /build/");
     install_arch.makeFn = installArch;
+    install_arch.dependOn(b.getInstallStep());
 
     const create_iso = b.step("create_iso","Create an install ISO for XROS");
     b.default_step = create_iso;
     create_iso.dependOn(b.getInstallStep());
     create_iso.dependOn(install_arch);
     create_iso.makeFn = makeiso;
+
 }
 
-fn installArch(self: *std.Build.Step, mkopts: std.Build.Step.MakeOptions) anyerror!void {
+//fn loadConfig(self: *std.Build.Step, mkopts: std.Build.Step.MakeOptions) !void {}
+
+fn installArch(self: *std.Build.Step, mkopts: std.Build.Step.MakeOptions) !void {
     try std.fs.cwd().deleteTree("build");
     try std.fs.cwd().makeDir("build");
-
+    const builddir = try std.fs.cwd().openDir("build", .{});
+    try builddir.makeDir("arch");
+    std.debug.print("Pacstrapping arch directory. This will take a while.\n", .{});
     var buf:[4096]u8 = undefined;
     var path = try std.fs.cwd().realpathAlloc(self.owner.allocator, ".");
     std.mem.replaceScalar(u8, path[0..], '\\', '/');
@@ -61,7 +69,7 @@ fn installArch(self: *std.Build.Step, mkopts: std.Build.Step.MakeOptions) anyerr
         \\"Image": "archlinux",
         \\"Cmd": ["/bin/bash","-c","pacman -Sy arch-install-scripts --noconfirm && pacstrap -K /build base base-devel"],
         \\"HostConfig": {{
-        \\"Binds": ["{s}/build:/build"],
+        \\"Binds": ["{s}/build/arch:/build"],
         \\"Privileged": true
         \\}}
         \\}}
@@ -100,7 +108,7 @@ fn installArch(self: *std.Build.Step, mkopts: std.Build.Step.MakeOptions) anyerr
     _ = mkopts;
 }
 
-fn makeiso(self: *std.Build.Step, mkopts: std.Build.Step.MakeOptions) anyerror!void {
+fn makeiso(self: *std.Build.Step, mkopts: std.Build.Step.MakeOptions) !void {
     const builddir = try std.fs.cwd().openDir("build", .{});
     const usrbin = try builddir.openDir("usr/bin", .{});
     
@@ -109,10 +117,8 @@ fn makeiso(self: *std.Build.Step, mkopts: std.Build.Step.MakeOptions) anyerror!v
     @memcpy(binpath[self.owner.install_path.len..], "/bin");
     
     const out = try std.fs.openDirAbsolute(binpath, .{ .iterate = true });
-    
-    const exe_names = [_]*const[4:0]u8 {"vrui", "ctmn"};
 
-    for (exe_names) |i| {
+    for (config.executables) |i| {
         try out.copyFile(i, usrbin, i, .{});
     }
     _ = mkopts;

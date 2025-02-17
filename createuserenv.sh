@@ -1,10 +1,4 @@
 #!/usr/bin/bash
-cd tmp
-docker save archlinux -o arch.tar
-tar -xf arch.tar
-tar -xf \
-    $(find ./arch/blobs/sha256 -type f -size +100M | tr -d '\n') \
-    -C $( getent passwd "$USER" | cut -d: -f6 )
 
 arch-chroot $( getent passwd "$USER" | cut -d: -f6 )
 
