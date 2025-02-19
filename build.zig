@@ -4,24 +4,31 @@ const Configuration = struct {
     sv_major: u16 = 0,
     sv_minor: u16 = 0,
     sv_patch: u16 = 1,
-    executables: []const []const u8,
-    libraries: []const []const u8,
+    executables: []const []const u8 = &.{ "vrui", "ctmn" },
+    libraries: []const []const u8 = &.{},
 };
-
 var config: Configuration = undefined;
+
 var id: ?[]u8 = null;
 
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     config = cfg: {
-        const configdir = std.fs.cwd().openDir("config", .{}) catch |err| {break :cfg err;};
-        const configjsonfile = configdir.openFile("config.json", .{}) catch |err| {break :cfg err;};
-        const configjson = configjsonfile.readToEndAlloc(b.allocator, 1024*1024) catch |err| {break :cfg err;};
-        const parsedconfig = std.json.parseFromSlice(Configuration, b.allocator, configjson, .{}) catch |err| {break :cfg err;};
+        const configdir = std.fs.cwd().openDir("config", .{}) catch |err| {
+            std.debug.print("No config dir found. Using defaults.\n", .{});
+            break :cfg err;
+        };
+        const configjsonfile = configdir.openFile("config.json", .{}) catch |err| {
+            std.debug.print("No config.json file found. Using defaults.\n", .{});
+            break :cfg err;
+        };
+        const configjson = try configjsonfile.readToEndAlloc(b.allocator, 1024*1024);
+        const parsedconfig = try std.json.parseFromSlice(Configuration, b.allocator, configjson, .{});
         defer parsedconfig.deinit();
         break :cfg parsedconfig.value;
     } catch Configuration{ .executables = &.{ "vrui", "ctmn" }, .libraries = &.{} };
+    
     //libs
     const zgl = b.dependency("zgl", .{
         .target = target,
@@ -33,23 +40,25 @@ pub fn build(b: *std.Build) !void {
     var exes = try b.allocator.alloc(*std.Build.Step.Compile, config.executables.len);
     var main_path: [13]u8 = undefined;
     @memcpy(main_path[4..], "/main.zig");
-    for (0..config.executables.len - 1) |i| {
-        @memcpy(main_path[0..4], config.executables[i]);
-        modules[i] = b.createModule(.{
-            .root_source_file = b.path(&main_path),
-            .target = target,
-            .optimize = optimize,
-        });
-        exes[i] = b.addExecutable(.{
-            .name = config.executables[i],
-            .root_module = modules[i],
-        });
-        modules[i].addImport("zgl", zgl.module("zgl"));
-        b.installArtifact(exes[i]);
+    if (config.executables.len > 0){
+        for (0..config.executables.len - 1) |i| {
+            @memcpy(main_path[0..4], config.executables[i]);
+            modules[i] = b.createModule(.{
+                .root_source_file = b.path(&main_path),
+                .target = target,
+                .optimize = optimize,
+            });
+            exes[i] = b.addExecutable(.{
+                .name = config.executables[i],
+                .root_module = modules[i],
+            });
+            modules[i].addImport("zgl", zgl.module("zgl"));
+            b.installArtifact(exes[i]);
+        }
     }
 
     const install_arch = b.step("install_arch", "Install Archlinux into /build/");
-    install_arch.makeFn = installArch;
+    //install_arch.makeFn = installArch;
     install_arch.dependOn(b.getInstallStep());
 
     const create_iso = b.step("create_iso", "Create an install ISO for XROS");
@@ -116,16 +125,13 @@ fn installArch(self: *std.Build.Step, mkopts: std.Build.Step.MakeOptions) !void 
 
 fn makeiso(self: *std.Build.Step, mkopts: std.Build.Step.MakeOptions) !void {
     const builddir = try std.fs.cwd().openDir("build", .{});
-    const usrbin = try builddir.openDir("usr/bin", .{});
+    const usrbin = try builddir.openDir("arch/usr/bin", .{});
 
-    const binpath = try self.owner.allocator.alloc(u8, 4 + self.owner.install_path.len);
-    @memcpy(binpath[0..self.owner.install_path.len], self.owner.install_path);
-    @memcpy(binpath[self.owner.install_path.len..], "/bin");
-
-    const out = try std.fs.openDirAbsolute(binpath, .{ .iterate = true });
+    var binpath = try std.fs.openDirAbsolute(self.owner.install_path, .{});
+    binpath = try binpath.openDir("bin", .{});
 
     for (config.executables) |i| {
-        try out.copyFile(i, usrbin, i, .{});
+        try binpath.copyFile(i, usrbin, i, .{});
     }
     _ = mkopts;
 }
@@ -136,12 +142,12 @@ fn stopContainer(_: i32) !void {
         const allocator = gpa.allocator();
         std.debug.print("Error occured! Killing container {s}.", .{id orelse "[NO CONTAINER]"});
         var uribuffer: [2048]u8 = undefined;
-        const uri = std.Uri.parse(std.fmt.bufPrint(&uribuffer, "http://localhost:2375/containers/{s}/kill", .{id orelse ""}) catch unreachable) catch unreachable;
+        const uri = try std.Uri.parse(try std.fmt.bufPrint(&uribuffer, "http://localhost:2375/containers/{s}/kill", .{id orelse ""}));
         var client = std.http.Client{ .allocator = allocator };
-        var request = client.open(.POST, uri, .{ .server_header_buffer = &uribuffer }) catch unreachable;
-        request.send() catch unreachable;
-        request.finish() catch unreachable;
-        request.wait() catch unreachable;
+        var request = try client.open(.POST, uri, .{ .server_header_buffer = &uribuffer });
+        try request.send();
+        try request.finish();
+        try request.wait();
         client.deinit();
         request.deinit();
         _ = gpa.deinit();
