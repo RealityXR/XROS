@@ -23,12 +23,12 @@ pub fn build(b: *std.Build) !void {
             std.debug.print("No config.json file found. Using defaults.\n", .{});
             break :cfg err;
         };
-        const configjson = try configjsonfile.readToEndAlloc(b.allocator, 1024*1024);
+        const configjson = try configjsonfile.readToEndAlloc(b.allocator, 1024 * 1024);
         const parsedconfig = try std.json.parseFromSlice(Configuration, b.allocator, configjson, .{});
         defer parsedconfig.deinit();
         break :cfg parsedconfig.value;
     } catch Configuration{ .executables = &.{ "vrui", "ctmn" }, .libraries = &.{} };
-    
+
     //libs
     const zgl = b.dependency("zgl", .{
         .target = target,
@@ -40,7 +40,7 @@ pub fn build(b: *std.Build) !void {
     var exes = try b.allocator.alloc(*std.Build.Step.Compile, config.executables.len);
     var main_path: [13]u8 = undefined;
     @memcpy(main_path[4..], "/main.zig");
-    if (config.executables.len > 0){
+    if (config.executables.len > 0) {
         for (0..config.executables.len - 1) |i| {
             @memcpy(main_path[0..4], config.executables[i]);
             modules[i] = b.createModule(.{
@@ -58,7 +58,7 @@ pub fn build(b: *std.Build) !void {
     }
 
     const install_arch = b.step("install_arch", "Install Archlinux into /build/");
-    //install_arch.makeFn = installArch;
+    install_arch.makeFn = installArch;
     install_arch.dependOn(b.getInstallStep());
 
     const create_iso = b.step("create_iso", "Create an install ISO for XROS");
@@ -103,6 +103,7 @@ fn installArch(self: *std.Build.Step, mkopts: std.Build.Step.MakeOptions) !void 
     try request.finish();
     try request.wait();
     const body = try request.reader().readAllAlloc(self.owner.allocator, 8192);
+    std.debug.print("Body: {s}", .{body});
     id = body[7..71];
     uri = try std.Uri.parse(try std.fmt.bufPrint(&buf, "http://localhost:2375/containers/{s}/start", .{id orelse ""}));
     var request2 = try client.open(.POST, uri, .{ .server_header_buffer = &buf, .headers = headers });
@@ -124,14 +125,23 @@ fn installArch(self: *std.Build.Step, mkopts: std.Build.Step.MakeOptions) !void 
 }
 
 fn makeiso(self: *std.Build.Step, mkopts: std.Build.Step.MakeOptions) !void {
-    const builddir = try std.fs.cwd().openDir("build", .{});
-    const usrbin = try builddir.openDir("arch/usr/bin", .{});
+    const builddir = std.fs.cwd().openDir("build", .{}) catch |err| {
+        std.debug.print("Error opening build.", .{});
+        return err;
+    };
+    const usrbin = builddir.openDir("arch/usr/bin", .{}) catch |err| {
+        std.debug.print("Error opening usr/bin", .{});
+        return err;
+    };
 
     var binpath = try std.fs.openDirAbsolute(self.owner.install_path, .{});
     binpath = try binpath.openDir("bin", .{});
 
     for (config.executables) |i| {
-        try binpath.copyFile(i, usrbin, i, .{});
+        binpath.copyFile(i, usrbin, i, .{}) catch |err| {
+            std.debug.print("Error while copying file {s}.", .{i});
+            return err;
+        };
     }
     _ = mkopts;
 }
