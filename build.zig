@@ -1,3 +1,17 @@
+//!     This file is part of XROS <https://github.com/RealityXR/XROS>.
+//!
+//!     Copyright (C) 2025 Avalyn Baldyga.
+//!
+//!     XROS is free software: you can redistribute it and/or modify it under the terms
+//!     of the GNU General Public License as published by the Free Software Foundation, either version
+//!     2 of the License, or (at your option) any later version.
+//!     XROS is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
+//!     without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+//!     See the GNU General Public License for more details.
+//!
+//!     You should have received a copy of the GNU General Public License along with XROS.
+//!     If not, see <https://www.gnu.org/licenses/>.
+
 const std = @import("std");
 const Configuration = struct {
     os_name: []const u8 = "XROS",
@@ -14,6 +28,7 @@ var id: ?[]u8 = null;
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+
     config = cfg: {
         const configdir = std.fs.cwd().openDir("config", .{}) catch |err| {
             std.debug.print("No config dir found. Using defaults.\n", .{});
@@ -38,13 +53,13 @@ pub fn build(b: *std.Build) !void {
     //various programs
     var modules = try b.allocator.alloc(*std.Build.Module, config.executables.len);
     var exes = try b.allocator.alloc(*std.Build.Step.Compile, config.executables.len);
-    var main_path: [13]u8 = undefined;
-    @memcpy(main_path[4..], "/main.zig");
+    var buffer: [64]u8 = undefined;
+    var main_path: []u8 = undefined;
     if (config.executables.len > 0) {
-        for (0..config.executables.len - 1) |i| {
-            @memcpy(main_path[0..4], config.executables[i]);
+        for (0..config.executables.len) |i| {
+            main_path = try std.fmt.bufPrint(&buffer, "{s}/main.zig", .{config.executables[i]});
             modules[i] = b.createModule(.{
-                .root_source_file = b.path(&main_path),
+                .root_source_file = b.path(main_path),
                 .target = target,
                 .optimize = optimize,
             });
@@ -70,19 +85,14 @@ pub fn build(b: *std.Build) !void {
 
 //fn loadConfig(self: *std.Build.Step, mkopts: std.Build.Step.MakeOptions) !void {}
 
-fn installArch(self: *std.Build.Step, mkopts: std.Build.Step.MakeOptions) !void {
-    try std.fs.cwd().deleteTree("build");
-    try std.fs.cwd().makeDir("build");
-    const builddir = try std.fs.cwd().openDir("build", .{});
-    try builddir.makeDir("arch");
-    std.debug.print("Pacstrapping arch directory. This will take a while.\n", .{});
+fn pacstrap_docker(step: *std.Build.Step) !void {
     var buf: [4096]u8 = undefined;
-    var path = try std.fs.cwd().realpathAlloc(self.owner.allocator, ".");
+    var path = try std.fs.cwd().realpathAlloc(step.owner.allocator, ".");
     std.mem.replaceScalar(u8, path[0..], '\\', '/');
     const data = try std.fmt.bufPrint(&buf,
         \\{{
         \\"Image": "archlinux",
-        \\"Cmd": ["/bin/bash","-c","pacman -Sy arch-install-scripts --noconfirm && pacstrap -K /build base base-devel"],
+        \\"Cmd": ["/bin/bash","-c","pacman -Sy arch-install-scripts --noconfirm && pacstrap -K /build base base-devel git fastfetch python go networkmanager zig gcc cmake docker"],
         \\"HostConfig": {{
         \\"Binds": ["{s}/build/arch:/build"],
         \\"Privileged": true
@@ -90,7 +100,7 @@ fn installArch(self: *std.Build.Step, mkopts: std.Build.Step.MakeOptions) !void 
         \\}}
     , .{path});
 
-    var client = std.http.Client{ .allocator = self.owner.allocator };
+    var client = std.http.Client{ .allocator = step.owner.allocator };
     defer client.deinit();
     var uri = try std.Uri.parse("http://localhost:2375/containers/create");
     var headers = std.http.Client.Request.Headers{};
@@ -102,7 +112,7 @@ fn installArch(self: *std.Build.Step, mkopts: std.Build.Step.MakeOptions) !void 
     try request.writeAll(data);
     try request.finish();
     try request.wait();
-    const body = try request.reader().readAllAlloc(self.owner.allocator, 8192);
+    const body = try request.reader().readAllAlloc(step.owner.allocator, 8192);
     std.debug.print("Body: {s}", .{body});
     id = body[7..71];
     uri = try std.Uri.parse(try std.fmt.bufPrint(&buf, "http://localhost:2375/containers/{s}/start", .{id orelse ""}));
@@ -120,7 +130,53 @@ fn installArch(self: *std.Build.Step, mkopts: std.Build.Step.MakeOptions) !void 
     defer request3.deinit();
     try request3.send();
     try request3.wait();
-    _ = try request3.reader().readAllAlloc(self.owner.allocator, 8192);
+    _ = try request3.reader().readAllAlloc(step.owner.allocator, 8192);
+}
+
+fn pacstrap(step: *std.Build.Step, path: []u8) !void {
+    std.debug.print("{s}\n", .{path});
+    const argv = [_][]const u8{ "pacstrap", "-K", path, "base", "base-devel", "git", "fastfetch", "python", "go", "networkmanager", "zig", "gcc", "cmake", "docker" };
+    var child = std.process.Child.init(&argv, step.owner.allocator);
+    child.stderr_behavior = .Pipe;
+    try child.spawn();
+    const exit_code = try child.wait();
+    std.debug.print("Pacstrap exited with code {d}\n", .{exit_code.Exited});
+    if (exit_code.Exited != 0) {
+        const stderr = child.stderr orelse unreachable;
+        std.debug.print("{s}\n", .{try stderr.readToEndAlloc(step.owner.allocator, 4096)});
+        return error.PacstrapError;
+    }
+}
+
+fn installArch(self: *std.Build.Step, mkopts: std.Build.Step.MakeOptions) !void {
+    umount: {
+        var builddir = std.fs.cwd().openDir("build", .{}) catch {
+            break :umount;
+        };
+        var ramdisk = builddir.openDir("ramdisk", .{}) catch {
+            break :umount;
+        };
+        const ramdiskpath = ramdisk.realpathAlloc(self.owner.allocator, ".") catch {
+            break :umount;
+        };
+        _ = &ramdisk.close();
+        _ = &builddir.close();
+        const ztermed = try std.mem.Allocator.dupeZ(self.owner.allocator, u8, ramdiskpath);
+        _ = std.os.linux.umount(ztermed);
+    }
+    std.fs.cwd().deleteTree("build") catch {};
+    try std.fs.cwd().makeDir("build");
+    const builddir = try std.fs.cwd().openDir("build", .{});
+    try builddir.makeDir("arch");
+    const archdir = try builddir.openDir("arch", .{});
+    std.debug.print("Pacstrapping arch directory. This will take a while.\n", .{});
+
+    if (self.owner.option(bool, "docker", "Use Docker to pacstrap.") orelse false) {
+        try pacstrap_docker(self);
+    } else {
+        try pacstrap(self, try archdir.realpathAlloc(self.owner.allocator, "."));
+    }
+
     _ = mkopts;
 }
 
@@ -139,10 +195,16 @@ fn makeiso(self: *std.Build.Step, mkopts: std.Build.Step.MakeOptions) !void {
 
     for (config.executables) |i| {
         binpath.copyFile(i, usrbin, i, .{}) catch |err| {
-            std.debug.print("Error while copying file {s}.", .{i});
+            std.debug.print("Error while copying file {s}.\n", .{i});
             return err;
         };
     }
+
+    try builddir.makeDir("ramdisk");
+    const ramdisk = try builddir.openDir("ramdisk", .{});
+    const ramdiskpath = try ramdisk.realpathAlloc(self.owner.allocator, ".");
+    const mountr = try std.process.Child.run(.{ .allocator = self.owner.allocator, .argv = &[_][]const u8{ "mount", "-o", "size=8G", "-t", "tmpfs", "none", ramdiskpath } });
+    _ = mountr;
     _ = mkopts;
 }
 
