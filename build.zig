@@ -131,7 +131,7 @@ fn makeiso(self: *std.Build.Step, mkopts: std.Build.Step.MakeOptions) !void {
     binpath = try binpath.openDir("bin", .{});
 
     for (config.executables) |i| {
-        try binpath.copyFile(i, usrbin, i, .{});
+        try binpath.copyFile(i, usrbin, i, .{.override_mode = });
     }
     _ = mkopts;
 }
