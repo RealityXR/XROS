@@ -13,14 +13,7 @@
 //!     If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
-const Configuration = struct {
-    os_name: []const u8 = "XROS",
-    sv_major: u16 = 0,
-    sv_minor: u16 = 0,
-    sv_patch: u16 = 1,
-    executables: []const []const u8 = &.{ "vrui", "ctmn" },
-    libraries: []const []const u8 = &.{},
-};
+const Configuration = struct { os_name: []const u8 = "XROS", sv_major: u16 = 0, sv_minor: u16 = 0, sv_patch: u16 = 1, executables: []const []const u8 = &.{ "vrui", "ctmn" }, libraries: []const []const u8 = &.{} };
 var config: Configuration = undefined;
 
 var id: ?[]u8 = null;
@@ -72,15 +65,14 @@ pub fn build(b: *std.Build) !void {
         }
     }
 
-    const install_arch = b.step("install_arch", "Install Archlinux into /build/");
+    const install_arch = b.step("install_arch", "Install Archlinux into ./build/arch");
     install_arch.makeFn = installArch;
-    install_arch.dependOn(b.getInstallStep());
 
-    const create_iso = b.step("create_iso", "Create an install ISO for XROS");
-    b.default_step = create_iso;
-    create_iso.dependOn(b.getInstallStep());
-    create_iso.dependOn(install_arch);
-    create_iso.makeFn = makeiso;
+    const install_shit = b.step("install_shit", "Install various shit.");
+    b.default_step = install_shit;
+    install_shit.dependOn(b.getInstallStep());
+    install_shit.dependOn(install_arch);
+    install_shit.makeFn = installshit;
 }
 
 //fn loadConfig(self: *std.Build.Step, mkopts: std.Build.Step.MakeOptions) !void {}
@@ -181,6 +173,11 @@ fn installArch(self: *std.Build.Step, mkopts: std.Build.Step.MakeOptions) !void 
 }
 
 fn makeiso(self: *std.Build.Step, mkopts: std.Build.Step.MakeOptions) !void {
+    _ = self;
+    _ = mkopts;
+}
+
+fn installshit(self: *std.Build.Step, mkopts: std.Build.Step.MakeOptions) !void {
     const builddir = std.fs.cwd().openDir("build", .{}) catch |err| {
         std.debug.print("Error opening build.", .{});
         return err;
@@ -200,11 +197,6 @@ fn makeiso(self: *std.Build.Step, mkopts: std.Build.Step.MakeOptions) !void {
         };
     }
 
-    try builddir.makeDir("ramdisk");
-    const ramdisk = try builddir.openDir("ramdisk", .{});
-    const ramdiskpath = try ramdisk.realpathAlloc(self.owner.allocator, ".");
-    const mountr = try std.process.Child.run(.{ .allocator = self.owner.allocator, .argv = &[_][]const u8{ "mount", "-o", "size=8G", "-t", "tmpfs", "none", ramdiskpath } });
-    _ = mountr;
     _ = mkopts;
 }
 
